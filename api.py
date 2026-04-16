@@ -11,5 +11,5 @@ class PostData(BaseModel):
 @app.post("/post")
 async def post_message(data: PostData):
     # Worker Service の Discord Bot に送る仕組みを作る
-    # 例：Redis / Queue / Webhook など
+    # 例：Redis / Queue / Webhook など 
     return {"status": "received"}
