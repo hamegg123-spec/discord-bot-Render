@@ -1,6 +1,7 @@
+
+import requests
 from fastapi import FastAPI
 from pydantic import BaseModel
-import requests
 
 app = FastAPI()
 
@@ -8,12 +9,21 @@ class PostData(BaseModel):
     channelId: str
     message: str
 
-@app.get("/")
-def root():
-    return {"status": "ok"}
-
 @app.post("/post")
-def post_to_discord(data: PostData):
-    # ここで data.channelId, data.message を使って Discord に転送する
-    # まずは動作確認用にそのまま返すだけにしてもOK
-    return {"received_channel": data.channelId, "received_message": data.message}
+async def post_message(data: PostData):
+    # Bot 用サービスの URL
+    worker_url = "https://discord-bot-production-fcc0.up.railway.app/post"
+
+    r = requests.post(worker_url, json={
+        "channelId": data.channelId,
+        "message": data.message
+    })
+
+    return {
+        "status": "forwarded",
+        "worker_status": r.status_code
+    }
+
+
+
+
