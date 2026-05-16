@@ -2,9 +2,19 @@
 
 from flask import Flask, request, jsonify
 import asyncio
+import time
 import main  # bot, send_queue, bot_ready を使う
 
 app = Flask(__name__)
+
+def wait_for_bot_ready(timeout=10):
+    """Botが準備完了(main.bot_ready == True)になるまで最大timeout秒待つ関数"""
+    start_time = time.time()
+    while not main.bot_ready:
+        if time.time() - start_time > timeout:
+            return False
+        time.sleep(0.5)  # 0.5秒ごとに再チェック
+    return True
 
 @app.get("/")
 def ping():
@@ -12,7 +22,8 @@ def ping():
 
 @app.post("/post")
 def post_message():
-    if not main.bot_ready:
+    # 503で即拒否せず、最大10秒間Botの準備完了を待つ
+    if not wait_for_bot_ready():
         return jsonify({"status": "bot_not_ready"}), 503
 
     data = request.json or {}
@@ -35,7 +46,8 @@ def post_message():
 
 @app.post("/postCastleEvent")
 def post_castle_event():
-    if not main.bot_ready:
+    # 503で即拒否せず、最大10秒間Botの準備完了を待つ
+    if not wait_for_bot_ready():
         return jsonify({"status": "bot_not_ready"}), 503
 
     data = request.json or {}
