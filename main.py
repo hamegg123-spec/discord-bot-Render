@@ -18,11 +18,16 @@ intents.guilds = True
 
 bot = discord.Client(intents=intents)
 
+# Bot 準備フラグ
+bot_ready = False
+
 # 投稿キュー
 send_queue = asyncio.Queue()
 
 @bot.event
 async def on_ready():
+    global bot_ready
+    bot_ready = True
     log(f"Discord Bot ログイン成功: {bot.user}")
     log("Guild一覧: " + ", ".join([g.name for g in bot.guilds]))
     bot.loop.create_task(send_worker())
