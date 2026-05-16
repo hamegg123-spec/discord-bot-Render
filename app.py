@@ -1,87 +1,128 @@
-# app.py ver27.1 (Python 3.14+ 完全互換・スレッドバグ修正版)
+# app.py ver27.1  _MissingSentinel エラーを完璧に回避
 
 import os
-import asyncio
 import threading
-import datetime
+import asyncio
 from flask import Flask, request, jsonify
-import main  # main.py をインポート
+import discord
 
+# ==========================================
+# 1. Flask & Discord 初期化
+# ==========================================
 app = Flask(__name__)
 
-def log_api(msg):
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{now}] [FlaskAPI] {msg}")
+# Discordのインテント設定
+intents = discord.Intents.default()
+intents.message_content = True
 
-# Discord Botを別スレッドで安全に非同期実行する
-def run_discord():
-    # Python 3.14以降の仕様に合わせて、新しくクリーンなループを生成して割り当てる
+# グローバルなBotオブジェクト（初期化時にループを紐付けない）
+bot = discord.Client(intents=intents)
+
+# Botのステータス管理
+bot_status = "STARTING"
+
+# Discord BotのトークンとチャンネルID
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+DISCORD_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID")
+
+# ==========================================
+# 2. Discord イベントハンドラ
+# ==========================================
+@bot.event
+async def on_ready():
+    global bot_status
+    bot_status = "ONLINE"
+    print(f"[Discord] ログインしました！ ユーザー名: {bot.user}")
+
+# ==========================================
+# 3. Discord Bot 起動用バックグラウンド関数
+# ==========================================
+def run_discord_bot():
+    """
+    独立したスレッド内で、新しいイベントループを作成し、
+    そのループ内で直接 bot.start() を呼び出します。
+    これにより、Python 3.14 での '_MissingSentinel' エラーを完全に回避します。
+    """
+    print("[Discord] 専用スレッド内でイベントループを作成中...")
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
-    # main.py 側の loop 参照をこちらに同期する
-    main.bot.loop = loop
-    
-    token = os.environ.get("DISCORD_TOKEN")
+    if not DISCORD_TOKEN:
+        print("[Discord] エラー: DISCORD_TOKEN が設定されていません。")
+        return
+
+    print("[Discord] Botのログインシーケンスを開始します...")
     try:
-        # loop.run_until_complete の代わりに現代的なループ維持を使用
-        loop.run_until_complete(main.bot.start(token))
+        # loop.run_until_complete 内で start() を動かすことで、
+        # discord.py 内部の初期化フラグが正常にセットされます
+        loop.run_until_complete(bot.start(DISCORD_TOKEN))
     except Exception as e:
-        log_api(f"❌ Discord Botループ終了エラー: {e}")
-    finally:
-        loop.close()
+        print(f"[Discord] 起動中にエラーが発生しました: {e}")
 
-# アプリ起動時にバックグラウンドでDiscord Botを立ち上げる
-log_api("Discord Botのバックグラウンドループ（新方式）を準備中...")
-t = threading.Thread(target=run_discord, daemon=True)
-t.start()
-log_api("Discord Botのバックグラウンドスレッドを切り離しました。")
+# Flask起動前にスレッドを切り離してBotを開始
+print("[FlaskAPI] Discord Bot用のバックグラウンドスレッドを準備中...")
+bot_thread = threading.Thread(target=run_discord_bot, daemon=True)
+bot_thread.start()
+print("[FlaskAPI] バックグラウンドスレッドを切り離しました。")
 
-@app.route('/')
-def home():
-    status = "ONLINE" if main.bot_ready else "STARTING"
-    return f"Bot Status: {status}", 200
+# ==========================================
+# 4. Flask ルーティング
+# ==========================================
+@app.route('/', methods=['GET', 'HEAD'])
+def index():
+    """生存確認（Ping）用エンドポイント"""
+    return f"Bot Status: {bot_status}", 200
 
 @app.route('/postCastleEvent', methods=['POST'])
 def post_castle_event():
-    log_api("/postCastleEvent 受信しました")
+    """Cloudflare Workersからのイベントを受信してDiscordへ転送"""
+    print("[FlaskAPI] イベントを受信しました。")
     
-    # 15秒間の起動待ち（少し長めに設定）
-    for i in range(15):
-        if main.bot_ready:
-            break
-        log_api(f"⏳ Botのログインを待っています... ({i}秒経過)")
-        import time
-        time.sleep(1)
-        
-    if not main.bot_ready:
-        log_api("🔴 Botログイン待ちタイムアウト。503を返します。")
-        return jsonify({"status": "error", "message": "Bot is not ready"}), 503
+    if bot_status != "ONLINE":
+        print(f"[FlaskAPI] 警告: Botがログインしていません (現在のステータス: {bot_status})")
+        return jsonify({"status": "error", "message": "Bot is not ready yet"}), 503
+
+    if not DISCORD_CHANNEL_ID:
+        return jsonify({"status": "error", "message": "DISCORD_CHANNEL_ID is not set"}), 500
 
     try:
-        data = request.json or {}
-        channel_id = int(data.get("channelId", 0))
-        text = data.get("text", "")
-        
-        channel = main.bot.get_channel(channel_id)
-        if not channel:
-            log_api(f"❌ チャンネルが見つかりません: {channel_id}")
-            return jsonify({"status": "error", "message": "Channel not found"}), 400
+        data = request.json
+        if not data:
+            return jsonify({"status": "error", "message": "No data received"}), 400
 
-        log_api(f"📥 スレッド安全にキューへ追加します → Channel: {channel_id}")
+        # メッセージの組み立て
+        # ※データ構造に合わせてお好みで調整してください
+        msg = f"【イベント通知】\nデータ: {data}"
+        if isinstance(data, list) and len(data) > 0:
+            item = data[0]
+            city_info = item.get("cityInfo", {})
+            msg = (
+                f"城イベント発生！\n"
+                f"国: {item.get('nation')} | 陣営: {city_info.get('faction')}\n"
+                f"場所: {city_info.get('gun')}{city_info.get('city')} ({city_info.get('x')}, {city_info.get('y')})"
+            )
+
+        # thread-safeにDiscordのイベントループへメッセージ送信タスクを投げる
+        channel_id = int(DISCORD_CHANNEL_ID)
         
-        # 安全にDiscordのイベントループにコルーチンを投げ込む
-        asyncio.run_coroutine_threadsafe(
-            main.send_queue.put((channel, text)), 
-            main.bot.loop
-        )
+        async def send_msg():
+            channel = bot.get_channel(channel_id)
+            if channel:
+                await channel.send(msg)
+                print("[Discord] メッセージの送信に成功しました。")
+            else:
+                print(f"[Discord] エラー: チャンネルID {channel_id} が見つかりません。")
+
+        # Botが動いているループに対してスレッドセーフに非同期関数を実行
+        asyncio.run_coroutine_threadsafe(send_msg(), bot.loop)
         
-        return jsonify({"status": "success", "message": "Queued successfully"}), 200
-        
+        return jsonify({"status": "success", "message": "Event forwarded to Discord"}), 200
+
     except Exception as e:
-        log_api(f"❌ エラー発生: {e}")
+        print(f"[FlaskAPI] 処理中にエラーが発生しました: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == '__main__':
+    # ローカルテスト用
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host='0.0.0.0', port=port)
