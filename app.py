@@ -1,4 +1,4 @@
-# app.py ver27.1 (Render完全統合版)
+# app.py ver27.1 (Render完全統合・クラッシュ修正版)
 
 import os
 import asyncio
@@ -17,19 +17,22 @@ def log_api(msg):
 def run_discord():
     asyncio.set_event_loop(main.bot.loop)
     token = os.environ.get("DISCORD_TOKEN")
-    # bot.start は非同期なので、ループ内で実行
-    main.bot.loop.run_until_complete(main.bot.start(token))
+    try:
+        main.bot.loop.run_until_complete(main.bot.start(token))
+    except Exception as e:
+        log_api(f"❌ Discord Botループ終了エラー: {e}")
 
-@app.before_all_requests  # 最初のアクセスまたは起動時にBotを開始
-def start_bot_background():
-    if not main.bot.loop.is_running():
-        log_api("Discord Botのバックグラウンドループを開始します...")
-        t = threading.Thread(target=run_discord, daemon=True)
-        t.start()
+# 🚀 アプリ起動時（リクエストを待つ前）に、自動で一度だけBotを起動する構造に変更
+log_api("Discord Botのバックグラウンドループを準備中...")
+t = threading.Thread(target=run_discord, daemon=True)
+t.start()
+log_api("Discord Botのバックグラウンドスレッドを切り離しました。")
 
 @app.route('/')
 def home():
-    return f"Bot Status: {'ONLINE' if main.bot_ready else 'STARTING'}", 200
+    # 状態をテキストで返す
+    status = "ONLINE" if main.bot_ready else "STARTING"
+    return f"Bot Status: {status}", 200
 
 @app.route('/postCastleEvent', methods=['POST'])
 def post_castle_event():
@@ -59,7 +62,7 @@ def post_castle_event():
 
         log_api(f"📥 スレッド安全にキューへ追加します → Channel: {channel_id}")
         
-        # 【重要】別スレッドのasyncio.Queueへ安全にデータを送り込む魔法の関数
+        # 別スレッドのasyncio.Queueへ安全にデータを送り込む
         asyncio.run_coroutine_threadsafe(
             main.send_queue.put((channel, text)), 
             main.bot.loop
