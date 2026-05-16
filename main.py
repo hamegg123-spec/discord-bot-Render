@@ -5,7 +5,7 @@ from discord.ext import commands
 import os
 
 intents = discord.Intents.default()
-intents.message_content = True  # メッセージ内容を読む場合は必須
+intents.message_content = True  # メッセージ内容を読む場合は必須 
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
