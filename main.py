@@ -1,29 +1,16 @@
+# main.py
+import threading
+import discord
+from discord.ext import commands
 
-import requests
-from fastapi import FastAPI
-from pydantic import BaseModel
+bot = commands.Bot(command_prefix="!")
 
-app = FastAPI()
+@bot.event
+async def on_ready():
+    print("Bot is ready")
 
-class PostData(BaseModel):
-    channelId: str
-    message: str
+def run_bot():
+    bot.run("DISCORD_TOKEN")
 
-@app.post("/post")
-async def post_message(data: PostData):
-    # Bot 用サービスの URL
-    worker_url = "https://discord-bot-production-fcc0.up.railway.app/post"
-
-    r = requests.post(worker_url, json={
-        "channelId": data.channelId,
-        "message": data.message
-    })
-
-    return {
-        "status": "forwarded",
-        "worker_status": r.status_code
-    }
-
-
-
-
+# Bot を別スレッドで起動
+threading.Thread(target=run_bot).start()
