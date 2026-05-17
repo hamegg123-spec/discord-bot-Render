@@ -118,3 +118,11 @@ if __name__ == '__main__':
     ensure_bot_started()
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
+
+# app.py の空いている場所に追記
+
+@app.route('/render-healthz', methods=['GET'])
+def render_healthz():
+    # Renderのヘルスチェック用。中身は空っぽで200を返すだけ
+    return "", 200
+
