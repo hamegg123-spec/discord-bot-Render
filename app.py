@@ -11,6 +11,10 @@ app = Flask(__name__)
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 DISCORD_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID")
 
+# スレッドが重複起動しないためのロックとフラグ
+bot_thread_lock = threading.Lock()
+bot_thread_started = False
+
 def get_bot_status_str():
     from main import bot_ready
     return "ONLINE" if bot_ready else "STARTING"
@@ -27,15 +31,28 @@ def run_discord_bot_core():
     except Exception as e:
         print(f"[App-Init] ❌ Discord Botが例外で終了しました:\n{traceback.format_exc()}", flush=True)
 
-# 💡 Flaskがインポートされた瞬間（GunicornのWorker起動時）に1回だけスレッドを切り離す
-if DISCORD_TOKEN and os.environ.get("WERKZEUG_RUN_MAIN") != "true": 
-    # WERKZEUG_RUN_MAINチェックにより、ローカルデバッグ時の2回起動も防止
-    print("[App-Init] Webワーカープロセス起動を検知。Discordバックグラウンドスレッドを開始します...", flush=True)
-    bot_thread = threading.Thread(target=run_discord_bot_core, daemon=True)
-    bot_thread.start()
-else:
-    if not DISCORD_TOKEN:
-        print("[App-Init] ❌ エラー: DISCORD_TOKEN がありません。Discord Botは起動しません。", flush=True)
+def ensure_bot_started():
+    """Botスレッドが未起動の場合のみ、安全に起動させる関数"""
+    global bot_thread_started
+    if bot_thread_started:
+        return
+
+    with bot_thread_lock:
+        if bot_thread_started:
+            return
+
+        if DISCORD_TOKEN:
+            print("[App-Init] Webワーカープロセス起動を検知。Discordバックグラウンドスレッドを開始します...", flush=True)
+            bot_thread = threading.Thread(target=run_discord_bot_core, daemon=True)
+            bot_thread.start()
+            bot_thread_started = True
+        else:
+            print("[App-Init] ❌ エラー: DISCORD_TOKEN がありません。Discord Botは起動しません。", flush=True)
+
+# 💡 Renderのヘルスチェック(GET /)やAPIリクエストが届いた瞬間にトリガーして確実に起こす
+@app.before_request
+def initialize_before_request():
+    ensure_bot_started()
 
 # ==========================================
 # 3. Flask ルーティング
@@ -97,5 +114,7 @@ def post_castle_event():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == '__main__':
+    # ローカル実行時、または明示的なpython app.py起動時にもBotを起動
+    ensure_bot_started()
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
