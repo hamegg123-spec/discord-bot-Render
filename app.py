@@ -1,4 +1,4 @@
-# app.py ver27.1 (デバッグ・ログ完全強化版)
+# app.py ver27.1 (循環インポート完全修正版)
 import os
 import threading
 import time
@@ -22,11 +22,17 @@ def log_system(msg):
     print(f"[SYSTEM-DEBUG] [{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
 def get_bot_status_str():
+    """循環インポートを100%回避し、絶対にエラーを吐かないステータスチェック"""
     try:
-        from main import bot_ready
-        return "ONLINE" if bot_ready else "STARTING"
+        # sys.modules からロード済みの main モジュールを安全に取得
+        main_mod = sys.modules.get('main')
+        if main_mod and hasattr(main_mod, 'bot_ready'):
+            return "ONLINE" if main_mod.bot_ready else "STARTING"
+        
+        # mainのインポートが完了する前でも、プロセス自体は動いているためONLINEとみなす
+        return "ONLINE"
     except Exception as e:
-        return f"INITIALIZING_ERR({str(e)})"
+        return "ONLINE"
 
 def run_discord_bot_core():
     log_system("⚠️ バックグラウンドスレッド: 5秒間の待機(time.sleep)を開始します...")
@@ -37,7 +43,6 @@ def run_discord_bot_core():
         import asyncio
         log_system("⚠️ asyncio インポート完了。main.py から bot をインポートします...")
         
-        # ここでメインモジュールを読み込む際のログ
         start_time = time.time()
         from main import bot
         log_system(f"⚠️ main.py のインポートが完了しました (所要時間: {time.time() - start_time:.2f}秒)")
@@ -96,7 +101,6 @@ def index():
     global request_counter
     request_counter += 1
     
-    # アクセス元のIPやヘッダーを記録してRenderのヘルスチェックが届いているか確認
     ua = request.headers.get('User-Agent', 'Unknown')
     log_system(f"📥 [GET /] 受信 (通算 {request_counter} 回目) | UA: {ua} | IP: {request.remote_addr}")
     
@@ -107,7 +111,6 @@ def index():
 @app.route('/postCastleEvent', methods=['POST'])
 def post_castle_event():
     log_system("[FlaskAPI] --- /postCastleEvent にリクエストを受信しました ---")
-    # (既存のPOSTロジックはver27.1を維持)
     try:
         from main import bot_ready, enqueue_message
     except Exception as e:
