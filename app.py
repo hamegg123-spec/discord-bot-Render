@@ -1,4 +1,4 @@
-# app.py ver27.1  _MissingSentinel エラーを完璧に回避
+# app.py ver27.1  Gunicorn競合とポートスキャンエラーを完璧に回避
 
 import os
 import threading
@@ -15,11 +15,13 @@ app = Flask(__name__)
 intents = discord.Intents.default()
 intents.message_content = True
 
-# グローバルなBotオブジェクト（初期化時にループを紐付けない）
+# グローバルなBotオブジェクト
 bot = discord.Client(intents=intents)
 
 # Botのステータス管理
 bot_status = "STARTING"
+bot_started = False  # スレッドの二重起動防止フラグ
+lock = threading.Lock() # スレッド安全のためのロック
 
 # Discord BotのトークンとチャンネルID
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
@@ -41,7 +43,6 @@ def run_discord_bot():
     """
     独立したスレッド内で、新しいイベントループを作成し、
     そのループ内で直接 bot.start() を呼び出します。
-    これにより、Python 3.14 での '_MissingSentinel' エラーを完全に回避します。
     """
     print("[Discord] 専用スレッド内でイベントループを作成中...")
     loop = asyncio.new_event_loop()
@@ -53,20 +54,32 @@ def run_discord_bot():
 
     print("[Discord] Botのログインシーケンスを開始します...")
     try:
-        # loop.run_until_complete 内で start() を動かすことで、
-        # discord.py 内部の初期化フラグが正常にセットされます
         loop.run_until_complete(bot.start(DISCORD_TOKEN))
     except Exception as e:
         print(f"[Discord] 起動中にエラーが発生しました: {e}")
 
-# Flask起動前にスレッドを切り離してBotを開始
-print("[FlaskAPI] Discord Bot用のバックグラウンドスレッドを準備中...")
-bot_thread = threading.Thread(target=run_discord_bot, daemon=True)
-bot_thread.start()
-print("[FlaskAPI] バックグラウンドスレッドを切り離しました。")
+# ==========================================
+# 4. Gunicorn / Flask 起動時フック
+# ==========================================
+@app.before_request
+def start_bot_on_first_request():
+    """
+    最初のアクセス（Renderのヘルスチェック等）があった瞬間に、
+    ワーカープロセス内で一度だけ Discord Bot のスレッドを起動します。
+    これにより、Gunicornのマスタープロセスとの衝突を防ぎ、Flaskの起動を最優先させます。
+    """
+    global bot_started
+    if not bot_started:
+        with lock:
+            if not bot_started:
+                print("[FlaskAPI] 最初のアクセスを検知。Discord Bot用のバックグラウンドスレッドを起動します...")
+                bot_thread = threading.Thread(target=run_discord_bot, daemon=True)
+                bot_thread.start()
+                bot_started = True
+                print("[FlaskAPI] バックグラウンドスレッドを切り離しました。")
 
 # ==========================================
-# 4. Flask ルーティング
+# 5. Flask ルーティング
 # ==========================================
 @app.route('/', methods=['GET', 'HEAD'])
 def index():
@@ -80,7 +93,7 @@ def post_castle_event():
     
     if bot_status != "ONLINE":
         print(f"[FlaskAPI] 警告: Botがログインしていません (現在のステータス: {bot_status})")
-        return jsonify({"status": "error", "message": "Bot is not ready yet"}), 503
+        return jsonify({"status": "error", "message": f"Bot is not ready yet (Status: {bot_status})"}), 503
 
     if not DISCORD_CHANNEL_ID:
         return jsonify({"status": "error", "message": "DISCORD_CHANNEL_ID is not set"}), 500
@@ -90,8 +103,6 @@ def post_castle_event():
         if not data:
             return jsonify({"status": "error", "message": "No data received"}), 400
 
-        # メッセージの組み立て
-        # ※データ構造に合わせてお好みで調整してください
         msg = f"【イベント通知】\nデータ: {data}"
         if isinstance(data, list) and len(data) > 0:
             item = data[0]
@@ -102,7 +113,6 @@ def post_castle_event():
                 f"場所: {city_info.get('gun')}{city_info.get('city')} ({city_info.get('x')}, {city_info.get('y')})"
             )
 
-        # thread-safeにDiscordのイベントループへメッセージ送信タスクを投げる
         channel_id = int(DISCORD_CHANNEL_ID)
         
         async def send_msg():
@@ -113,10 +123,12 @@ def post_castle_event():
             else:
                 print(f"[Discord] エラー: チャンネルID {channel_id} が見つかりません。")
 
-        # Botが動いているループに対してスレッドセーフに非同期関数を実行
-        asyncio.run_coroutine_threadsafe(send_msg(), bot.loop)
-        
-        return jsonify({"status": "success", "message": "Event forwarded to Discord"}), 200
+        # Botのループが生成されているか安全に確認してタスクを投げる
+        if bot.loop and bot.loop.is_running():
+            asyncio.run_coroutine_threadsafe(send_msg(), bot.loop)
+            return jsonify({"status": "success", "message": "Event forwarded to Discord"}), 200
+        else:
+            return jsonify({"status": "error", "message": "Discord loop is not running yet"}), 503
 
     except Exception as e:
         print(f"[FlaskAPI] 処理中にエラーが発生しました: {e}")
