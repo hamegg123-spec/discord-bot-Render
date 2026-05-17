@@ -16,11 +16,7 @@ intents.message_content = True
 intents.guilds = True
 
 bot = discord.Client(intents=intents)
-
-# Bot 準備フラグ
 bot_ready = False
-
-# 投稿キュー (asyncioの標準キュー)
 send_queue = asyncio.Queue()
 
 @bot.event
@@ -30,7 +26,6 @@ async def on_ready():
     log(f"🟢 Discord Bot ログイン成功: {bot.user}")
     log("所属Guild一覧: " + ", ".join([g.name for g in bot.guilds]))
     
-    # 確実にBotと同じループでワーカーを動かす
     bot.loop.create_task(send_worker())
     log("▶️ Discord 投稿ワーカー（キュー監視ループ）を開始しました")
 
@@ -43,18 +38,18 @@ async def send_worker():
             
             channel = bot.get_channel(int(channel_id))
             if channel is None:
-                log(f"[WORKER] ⚠️ チャンネルID {channel_id} がBotから見つかりません。キャッシュにないため取得を試みます...")
+                log(f"[WORKER] ⚠️ チャンネルID {channel_id} の取得を試みます...")
                 try:
                     channel = await bot.fetch_channel(int(channel_id))
                 except Exception as fetch_err:
-                    log(f"[WORKER] ❌ チャンネルの取得に完全に失敗しました。IDが正しいか、Botがサーバーにいるか確認してください: {fetch_err}")
+                    log(f"[WORKER] ❌ チャンネル取得失敗: {fetch_err}")
                     continue
 
             await channel.send(text)
             log(f"[WORKER] ✅ Discordへのメッセージ投稿が完了しました！")
             
         except Exception as e:
-            log(f"[WORKER] ❌ 送信処理中に致命的なエラーが発生しました:\n{traceback.format_exc()}")
+            log(f"[WORKER] ❌ 送信エラー:\n{traceback.format_exc()}")
         finally:
             await asyncio.sleep(0.5)
             try:
@@ -63,11 +58,10 @@ async def send_worker():
                 pass
 
 def enqueue_message(channel_id, text):
-    """Flask(別スレッド)から安全にDiscordのイベントループのキューへデータを追加する"""
     if bot.loop and bot.loop.is_running():
-        log(f"[QueueInput] Flaskからメッセージを受信。Discordのループへタスクを安全に委託します。")
+        log(f"[QueueInput] Flaskからメッセージを受信。キューへ追加します。")
         asyncio.run_coroutine_threadsafe(send_queue.put((channel_id, text)), bot.loop)
         return True
     else:
-        log("[QueueInput] ❌ エラー: Discordのイベントループがまだ動いていません。")
+        log("[QueueInput] ❌ エラー: Discordのイベントループが稼働していません。")
         return False
