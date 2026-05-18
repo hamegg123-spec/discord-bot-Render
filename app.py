@@ -1,4 +1,4 @@
-# app.py ver27.1 (Gunicorn対応・循環インポート完全分離・ログレベル制御・ワーカー限定起動版)
+# app.py ver27.1.1 (Gunicorn対応・循環インポート完全分離・ログレベル制御・投稿内容ログ追加版)
 import os
 import threading
 import time
@@ -65,11 +65,8 @@ def run_discord_bot_core():
 def ensure_bot_started():
     global bot_thread_started
     
-    # 🌟【重要】Gunicornのマスタープロセス（Webリクエストを処理しない親プロセス）での起動を徹底的にブロック
-    # Gunicorn環境下では、実際のワーカープロセス以外はスレッドを起動させない
+    # Gunicornマスタープロセスでの起動をブロック
     if "gunicorn" in sys.argv[0] or os.getenv("SERVER_SOFTWARE", "").startswith("gunicorn"):
-        # マスタープロセスは通常、リクエストを処理しないため、Flaskのコンテキスト（requestフラグ等）がないか、
-        # または特定のPIDになります。ここではリクエスト処理中＝ワーカーと断定し、それ以外（グローバル読み込み）はスキップします。
         if not request:
             return
 
@@ -142,31 +139,47 @@ def post_castle_event():
 
     try:
         data = request.json
+        log_system(f"[FlaskAPI] 受信JSON: {data}", "DEBUG")
+
         msg_text = None
         target_channel_id = DISCORD_CHANNEL_ID
 
         if isinstance(data, dict):
             msg_text = data.get("text")
-            if data.get("channelId"): target_channel_id = data.get("channelId")
+            if data.get("channelId"):
+                target_channel_id = data.get("channelId")
         elif isinstance(data, list) and len(data) > 0:
             item = data[0]
             city_info = item.get("cityInfo", {})
             msg_text = f"城イベント発生！\n国: {item.get('nation')} | 場所: {city_info.get('city')}"
-            if item.get("channelId"): target_channel_id = item.get("channelId")
+            if item.get("channelId"):
+                target_channel_id = item.get("channelId")
 
-        if not msg_text: msg_text = f"【イベント通知】\n{data}"
-        if not target_channel_id: return jsonify({"status": "error", "message": "No target channel id"}), 500
+        if not msg_text:
+            msg_text = f"【イベント通知】\n{data}"
+        if not target_channel_id:
+            log_system("❌ POSTエラー: 送信先チャンネルIDが未設定です。", "ERROR")
+            return jsonify({"status": "error", "message": "No target channel id"}), 500
+
+        # 実際にDiscordへ送る予定の内容をここでログ出力
+        log_system(
+            f"[FlaskAPI] Discord送信予定内容:\n"
+            f"--- CHANNEL: {target_channel_id} ---\n"
+            f"{msg_text}\n"
+            f"------------------------------",
+            "INFO"
+        )
 
         success = enqueue_message(target_channel_id, msg_text)
         if success:
+            log_system("[FlaskAPI] ✅ キュー投入成功。Discordワーカーに処理を委譲しました。", "INFO")
             return jsonify({"status": "success", "message": "Enqueued"}), 200
         else:
+            log_system("[FlaskAPI] ❌ キュー投入失敗。Discordワーカーが動作していない可能性があります。", "ERROR")
             return jsonify({"status": "error", "message": "Queue failed"}), 503
     except Exception as e:
         log_system(f"❌ POST内で例外: {traceback.format_exc()}", "ERROR")
         return jsonify({"status": "error", "message": str(e)}), 500
-
-# 🌟一番下にあったグローバルコンテキストでの ensure_bot_started() 呼び出しを削除
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))
