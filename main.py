@@ -1,4 +1,4 @@
-# main.py ver27.1 (Render統合・状態管理外部化・ログレベル制御版)
+# main.py ver27.1.1 (Render統合・状態管理外部化・ログレベル制御版・投稿内容ログ追加)
 import os
 import asyncio
 import datetime
@@ -56,6 +56,9 @@ async def send_worker():
                     log(f"[WORKER] ❌ チャンネル取得失敗: {fetch_err}", "ERROR")
                     continue
 
+            # 実際に送信する内容をログに出す
+            log(f"[WORKER] ▶️ Discord送信内容:\n--- CHANNEL: {channel_id} ---\n{text}\n------------------------------", "INFO")
+
             await channel.send(text)
             log(f"[WORKER] ✅ Discordへのメッセージ投稿が完了しました！", "INFO")
             
@@ -70,7 +73,8 @@ async def send_worker():
 
 def enqueue_message(channel_id, text):
     if bot.loop and bot.loop.is_running():
-        log(f"[QueueInput] Flaskからメッセージを受信。キューへ追加します。", "DEBUG")
+        log(f"[QueueInput] Flaskからメッセージを受信。キューへ追加します。CHANNEL={channel_id}", "DEBUG")
+        log(f"[QueueInput] キュー投入メッセージ内容:\n{text}", "DEBUG")
         asyncio.run_coroutine_threadsafe(send_queue.put((channel_id, text)), bot.loop)
         return True
     else:
