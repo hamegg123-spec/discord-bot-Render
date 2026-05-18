@@ -1,4 +1,4 @@
-# app.py ver27.1 (Gunicorn対応・循環インポート完全分離・ログレベル制御版)
+# app.py ver27.1 (Gunicorn対応・循環インポート完全分離・ログレベル制御・プロセス起動対策版)
 import os
 import threading
 import time
@@ -24,12 +24,9 @@ bot_thread_started = False
 request_counter = 0
 
 def log_system(msg, level="DEBUG"):
-    """
-    指定されたレベルが現在のLOG_LEVELを満たしている場合のみ出力する関数。
-    重要度が ERROR > WARNING > INFO > DEBUG の順で判定します。
-    """
+    """指定されたレベルが現在のLOG_LEVELを満たしている場合のみ出力する関数"""
     levels = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3}
-    current_idx = levels.get(LOG_LEVEL, 1)  # 不正な値ならINFO扱い
+    current_idx = levels.get(LOG_LEVEL, 1)
     msg_idx = levels.get(level.upper(), 0)
 
     if msg_idx >= current_idx:
@@ -38,7 +35,6 @@ def log_system(msg, level="DEBUG"):
 def get_bot_status_str():
     """独立したstateファイルからフラグを読み取るため、絶対にエラーを吐かない"""
     try:
-        # sys.modulesの不完全なモジュールを参照するのをやめ、状態フラグを直接確認
         return "ONLINE" if state.bot_ready else "STARTING"
     except Exception as e:
         return "ONLINE"
@@ -68,7 +64,7 @@ def run_discord_bot_core():
 
 def ensure_bot_started():
     global bot_thread_started
-    log_system(f"ensure_bot_started が呼ばれました。現在のフラグ: {bot_thread_started}, PID: {os.getpid()}", "DEBUG")
+    log_system(f"ensure_bot_started が呼ばれました。現在のフラグ: {bot_thread_started}, PID: {os.getpid()}", "INFO")
     
     if bot_thread_started:
         return
@@ -78,7 +74,7 @@ def ensure_bot_started():
             return
 
         if DISCORD_TOKEN:
-            log_system("🤖 Discordバックグラウンドスレッドを作成し、起動します...", "INFO")
+            log_system(f"🤖 Discordバックグラウンドスレッドを作成し、起動します... (PID: {os.getpid()})", "INFO")
             bot_thread = threading.Thread(target=run_discord_bot_core, daemon=True)
             bot_thread.start()
             bot_thread_started = True
@@ -87,7 +83,7 @@ def ensure_bot_started():
             log_system("❌ エラー: DISCORD_TOKEN が環境変数に設定されていません。", "ERROR")
 
 # ==========================================
-# 🛠️ スレッド生存監視用のチェッカー（10秒おきに状態を出力）
+# 🛠️ スレッド生存監視用のチェッカー
 # ==========================================
 def monitor_threads():
     while True:
@@ -107,6 +103,9 @@ monitor_thread.start()
 # ==========================================
 @app.route('/', methods=['GET', 'HEAD'])
 def index():
+    # リクエストが来た際にも、このプロセスでBotが起動しているか確認・担保する
+    ensure_bot_started()
+    
     global request_counter
     request_counter += 1
     
@@ -119,17 +118,20 @@ def index():
 
 @app.route('/postCastleEvent', methods=['POST'])
 def post_castle_event():
-    log_system("[FlaskAPI] --- /postCastleEvent にリクエストを受信しました ---", "INFO")
+    # POSTリクエスト時にも確実にBotの起動を確認
+    ensure_bot_started()
+    
+    log_system(f"[FlaskAPI] --- /postCastleEvent にリクエストを受信しました (PID: {os.getpid()}) ---", "INFO")
     try:
         from main import enqueue_message
     except Exception as e:
         log_system(f"❌ POSTエラー: mainからのインポート失敗: {e}", "ERROR")
         return jsonify({"status": "error", "message": "System initializing"}), 503
 
-    # stateファイルからログイン状態を安全に取得
+    # stateファイルからログイン状態を取得
     if not state.bot_ready:
-        log_system("⚠️ POST警告: Discord Botがログインしていません。503を返します。", "WARNING")
-        return jsonify({"status": "error", "message": "Bot is not ready yet"}), 503
+        log_system(f"⚠️ POST警告: Discord Botがまだログイン完了していません(READYフラグ未立)。503を返します。現在の状態: {get_bot_status_str()}", "WARNING")
+        return jsonify({"status": "error", "message": f"Bot is not ready yet (Status: {get_bot_status_str()})"}), 503
 
     try:
         data = request.json
@@ -157,8 +159,7 @@ def post_castle_event():
         log_system(f"❌ POST内で例外: {traceback.format_exc()}", "ERROR")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# Gunicorn起動時に実行
-log_system("🚀 Gunicornのグローバルコンテキストで ensure_bot_started() をトリガーします。", "INFO")
+# Gunicornのグローバルコンテキストでも呼び出す
 ensure_bot_started()
 
 if __name__ == '__main__':
